@@ -13,6 +13,7 @@ import time
 from urllib.parse import quote
 
 import aiosqlite
+from aiohttp import web
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
@@ -29,8 +30,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 
-
-ENV_FOUND = {}  # .env dan o'qilgan kalitlar: nom -> qiymat uzunligi (qiymatning o'zi saqlanmaydi)
+ENV_FOUND = {}  # .env dan o'qilgan kalitlar
 
 
 def load_env(path: Path):
@@ -240,7 +240,6 @@ async def send_movie(bot, chat_id, uid, m):
 
 
 async def show(ev, text, kb=None):
-    """Callback bo'lsa xabarni tahrirlaydi, aks holda yangi xabar yuboradi."""
     if isinstance(ev, CallbackQuery):
         try:
             await ev.message.edit_text(text, reply_markup=kb)
@@ -482,7 +481,6 @@ async def cb_fav(c: CallbackQuery, callback_data: MovieCb, bot: Bot):
         pass
 
 
-# Eng oxirida — kod yoki nom bo'yicha qidiruv
 @user.message(StateFilter(None), F.text, ~F.text.startswith("/"))
 async def by_text(m: Message, bot: Bot):
     q = m.text.strip()
@@ -575,7 +573,6 @@ def back_kb(target="adm:menu", text="⬅️ Orqaga"):
     return kb.as_markup()
 
 
-# ───────── Statistika ─────────
 @admin.callback_query(F.data == "adm:stats")
 async def cb_stats(c: CallbackQuery):
     now = int(time.time())
@@ -602,7 +599,6 @@ async def cb_stats(c: CallbackQuery):
     await show(c, text, back_kb())
 
 
-# ───────── Kino qo'shish ─────────
 FIELDS = [
     ("year", "📅 Kino chiqqan <b>yilni</b> yuboring (masalan: 2024)"),
     ("genre", "🎭 <b>Janrni</b> yuboring (masalan: Jangari, Drama)"),
@@ -701,7 +697,7 @@ async def advance(ev, state: FSMContext, value, bot: Bot):
         await ev.answer()
     if data["idx"] < len(FIELDS):
         return await ask_field(target, state)
-    # Saqlash
+    
     await run(
         "INSERT INTO movies(code,title,title_lc,year,genre,lang,quality,description,file_id,file_type,added_at,added_by) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -732,7 +728,6 @@ async def add_skip(c: CallbackQuery, state: FSMContext, bot: Bot):
     await advance(c, state, "", bot)
 
 
-# ───────── Kinolar ro'yxati / tahrirlash ─────────
 @admin.callback_query(PageCb.filter())
 async def cb_movie_page(c: CallbackQuery, callback_data: PageCb, state: FSMContext):
     await state.clear()
@@ -829,7 +824,6 @@ async def edit_value(m: Message, state: FSMContext):
     await show_card(m, code)
 
 
-# ───────── Majburiy obuna ─────────
 async def subs_view(ev):
     on = (await get_setting("sub_on")) == "1"
     chans = await fetchall("SELECT * FROM channels ORDER BY id")
@@ -1131,6 +1125,22 @@ async def setedit_save(m: Message, state: FSMContext):
     await m.answer("✅ Saqlandi.", reply_markup=back_kb("adm:settings"))
 
 
+# ───────── RENDER UCHUN VEB-SERVER ─────────
+async def handle_ping(request):
+    return web.Response(text="Bot faol ishlamoqda!")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    log.info("Render web server %s portda ishga tushdi", port)
+
+
 # ───────────────────────────── MAIN ─────────────────────────────
 async def main():
     if not BOT_TOKEN:
@@ -1148,6 +1158,11 @@ async def main():
         raise SystemExit("\n".join(hint))
     if not OWNER_IDS:
         raise SystemExit("ADMIN_IDS topilmadi. .env ga o'z Telegram ID'ingizni yozing.")
+
+    # 1. Render talab qilgan veb-serverni ishga tushiramiz
+    await start_web_server()
+
+    # 2. Ma'lumotlar bazasi va Botni ishga tushiramiz
     await db_init()
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
